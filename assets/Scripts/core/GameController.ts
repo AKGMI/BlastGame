@@ -8,6 +8,9 @@ import { AnimationService } from "../game/services/AnimationService";
 import { GameModel } from "../game/models/GameModel";
 import { TileUtils } from "../shared/utils/TileUtils";
 import {HintService} from "../game/services/HintService";
+import { ChainReactionService } from "../game/services/ChainReactionService";
+import { IPosition } from "../shared/primitives";
+import { TileType } from "../features/tiles/TileTypes";
 
 const { ccclass } = cc._decorator;
 
@@ -253,7 +256,9 @@ export default class GameController implements IGameController {
             movedTiles: [],
             newTiles: [],
             swappedTile: undefined,
-            clickedGroup: undefined
+            clickedGroup: undefined,
+            chainLength: undefined,
+            explosionCenters: undefined
         };
 
         if (boosterResult.points) {
@@ -261,15 +266,58 @@ export default class GameController implements IGameController {
         }
 
         if (boosterResult.removed?.length > 0) {
-            this.gameModel.getGameBoard().removeGroup(boosterResult.removed);
+            const gameBoard = this.gameModel.getGameBoard();
+            const chainReactionService = ChainReactionService.getInstance();
+            let finalRemovedTiles = boosterResult.removed;
+            let totalPoints = boosterResult.points || 0;
+            let chainLength = 1;
+            let explosionCenters = [boosterResult.explosionCenter || boosterResult.removed[0]];
             
-            const movedTiles = this.gameModel.getGameBoard().applyGravity();
-            const newTiles = this.gameModel.getGameBoard().fillEmptyCells();
+            const affectedSuperTiles: (IPosition & { type: TileType })[] = [];
+            for (const pos of boosterResult.removed) {
+                const tile = gameBoard.getTile(pos.row, pos.col);
+                if (tile && TileUtils.isSuperTile(tile.type)) {
+                    affectedSuperTiles.push({
+                        row: pos.row,
+                        col: pos.col,
+                        type: tile.type
+                    });
+                }
+            }
             
-            moveResult.removed = boosterResult.removed;
+            if (affectedSuperTiles.length > 0) {
+                const fakeActivationResult = {
+                    removed: boosterResult.removed,
+                    points: boosterResult.points || 0,
+                    affectedSuperTiles: affectedSuperTiles
+                };
+                
+                const chainResult = chainReactionService.processChainReaction(
+                    gameBoard,
+                    fakeActivationResult,
+                    boosterResult.explosionCenter || boosterResult.removed[0]
+                );
+                
+                finalRemovedTiles = chainResult.allRemovedTiles;
+                totalPoints = chainResult.totalPoints;
+                chainLength = chainResult.chainLength;
+                explosionCenters = chainResult.explosionCenters;
+                
+                this.gameModel.getScoreManager().addScore(totalPoints - (boosterResult.points || 0));
+            }
+            
+            gameBoard.removeGroup(finalRemovedTiles);
+            
+            const movedTiles = gameBoard.applyGravity();
+            const newTiles = gameBoard.fillEmptyCells();
+            
+            moveResult.removed = finalRemovedTiles;
+            moveResult.points = totalPoints;
             moveResult.movedTiles = movedTiles;
             moveResult.newTiles = newTiles;
             moveResult.explosionCenter = boosterResult.explosionCenter || boosterResult.removed[0];
+            moveResult.chainLength = chainLength > 1 ? chainLength : undefined;
+            moveResult.explosionCenters = chainLength > 1 ? explosionCenters : undefined;
         }
         
         if (boosterResult.swappedTile) {           
